@@ -1,11 +1,14 @@
 #![allow(dead_code)]
 
-use std::ptr::null_mut;
+use std::{iter::from_fn, ptr::null_mut};
 
 use widestring::U16CString;
 use windows::{
     core::PWSTR,
-    Win32::{Foundation::WIN32_ERROR, System::Registry::*},
+    Win32::{
+        Foundation::{ERROR_NO_MORE_ITEMS, WIN32_ERROR},
+        System::Registry::*,
+    },
 };
 
 use crate::registry_value::{RegistryValue, RegistryValueData};
@@ -229,6 +232,95 @@ impl RegistryKey {
         }
 
         Ok(())
+    }
+
+    pub fn count_children(&self) -> Result<usize, RegistryError> {
+        let mut children_count: u32 = 0;
+        let info_err = unsafe {
+            RegQueryInfoKeyW(
+                self.hkey,
+                PWSTR::null(),
+                None,
+                None,
+                Some(&mut children_count),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+
+        if info_err.is_err() {
+            return Err(RegistryError::Win32Error(info_err));
+        }
+
+        Ok(children_count as usize)
+    }
+
+    pub fn iter_children_names(
+        &self,
+    ) -> Box<dyn Iterator<Item = Result<String, RegistryError>> + '_> {
+        // First we try getting the maximum length of the subkey names
+        let mut max_name_len: u32 = 0;
+        let info_err = unsafe {
+            RegQueryInfoKeyW(
+                self.hkey,
+                PWSTR::null(),
+                None,
+                None,
+                None,
+                Some(&mut max_name_len), // Maximum length of subkey names, not including null terminator
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+
+        if info_err.is_err() {
+            return Box::new([Err(RegistryError::Win32Error(info_err))].into_iter());
+        }
+
+        let mut name_buf = vec![0u16; max_name_len as usize + 1];
+        let mut index = 0;
+
+        return Box::new(from_fn(move || {
+            let mut name_len = name_buf.len() as u32 + 1;
+            let enum_err = unsafe {
+                RegEnumKeyExW(
+                    self.hkey,
+                    index,
+                    PWSTR(name_buf.as_mut_ptr()),
+                    &mut name_len,
+                    None,
+                    PWSTR::null(),
+                    None,
+                    None,
+                )
+            };
+
+            if enum_err.is_err() {
+                if enum_err == ERROR_NO_MORE_ITEMS {
+                    return None;
+                }
+
+                return Some(Err(RegistryError::Win32Error(enum_err)));
+            }
+
+            index += 1;
+
+            let name = U16CString::from_vec(name_buf[..name_len as usize].to_vec());
+
+            Some(
+                name.map(|n| n.to_string().unwrap())
+                    .map_err(|e| RegistryError::OtherError(e.to_string())),
+            )
+        }));
     }
 
     pub fn close(self) {

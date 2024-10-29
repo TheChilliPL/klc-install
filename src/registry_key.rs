@@ -6,7 +6,7 @@ use widestring::U16CString;
 use windows::{
     core::PWSTR,
     Win32::{
-        Foundation::{ERROR_NO_MORE_ITEMS, WIN32_ERROR},
+        Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, WIN32_ERROR},
         System::Registry::*,
     },
 };
@@ -19,7 +19,7 @@ pub struct RegistryKey {
     path: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegistryError {
     Win32Error(WIN32_ERROR),
     OtherError(String),
@@ -195,6 +195,21 @@ impl RegistryKey {
         value.map_err(|e| RegistryError::OtherError(e))
     }
 
+    pub fn try_get_value(
+        &self,
+        name: Option<&str>,
+    ) -> Result<Option<RegistryValue>, RegistryError> {
+        let res = self.get_value(name);
+        if res.is_err() {
+            let err = res.unwrap_err();
+            if err == RegistryError::Win32Error(ERROR_FILE_NOT_FOUND) {
+                return Ok(None);
+            }
+            return Err(err);
+        }
+        Ok(Some(res.unwrap()))
+    }
+
     pub fn set_value(
         &self,
         name: Option<&str>,
@@ -321,6 +336,15 @@ impl RegistryKey {
                     .map_err(|e| RegistryError::OtherError(e.to_string())),
             )
         }));
+    }
+
+    pub fn iter_children(
+        &self,
+    ) -> Box<dyn Iterator<Item = Result<RegistryKey, RegistryError>> + '_> {
+        Box::new(
+            self.iter_children_names()
+                .map(move |name_res| name_res.and_then(|name| self.get_subkey(&name))),
+        )
     }
 
     pub fn close(self) {

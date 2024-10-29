@@ -2,6 +2,7 @@
 
 use crate::registry_key::RegistryKey;
 use crate::utils::ToU16Slice;
+use widestring::U16CString;
 use windows::Win32::System::Registry::*;
 
 #[derive(Debug)]
@@ -82,8 +83,15 @@ impl RegistryValueData {
                 Ok(RegistryValueData::Qword(qword))
             }
             REG_SZ => {
-                let string = String::from_utf16_lossy(data.to_u16_slice());
-                Ok(RegistryValueData::String(string))
+                let string = U16CString::from_vec_truncate(data.to_u16_slice()).to_string();
+                // if string.is_err() {
+                //     return Err("Failed to parse UTF-16 data!".to_string());
+                // }
+                // let string = string.unwrap().to_string();
+                if string.is_err() {
+                    return Err("Failed to convert UTF-16 data to string!".to_string());
+                }
+                Ok(RegistryValueData::String(string.unwrap()))
             }
             REG_MULTI_SZ => {
                 let data_16 = data.to_u16_slice();

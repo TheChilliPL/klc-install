@@ -3,6 +3,7 @@ mod registry_key;
 mod registry_value;
 mod utils;
 use registry_key::RegistryKey;
+use registry_value::{RegistryValue, RegistryValueData};
 
 fn main() {
     if !is_elevated() {
@@ -19,16 +20,34 @@ fn main() {
         layouts_key.get_path()
     );
 
-    let subkey = layouts_key.create_subkey("FFFFFFFF").unwrap();
+    let layout_keys_iter = layouts_key.iter_children();
 
-    println!("Successfully created a new subkey.");
+    for layout_key in layout_keys_iter {
+        if layout_key.is_err() {
+            println!("Failed to open a child registry key.");
+            continue;
+        }
+        let layout_key = layout_key.unwrap();
+        let layout_id = layout_key.try_get_value(Some("Layout Id")).unwrap();
 
-    subkey
-        .set_value(
-            Some("Layout Id"),
-            registry_value::RegistryValueData::String("0FFF".to_string()),
-        )
-        .unwrap();
+        if layout_id.is_none() {
+            println!("The Layout Id registry value was not found.");
+            continue;
+        }
+
+        let layout_id = layout_id.unwrap();
+
+        match layout_id.get_value() {
+            RegistryValueData::String(s) => {
+                let layout_id_u16 = u16::from_str_radix(s.as_str(), 16).unwrap();
+                println!("Layout Id: {} (decimal {})", s, layout_id_u16);
+            }
+            _ => {
+                println!("The Layout Id registry value is not a string.");
+                continue;
+            }
+        }
+    }
 
     // unsafe {
     //     let mut layouts_key = Default::default();

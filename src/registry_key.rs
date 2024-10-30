@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
-use std::{iter::from_fn, ptr::null_mut};
+use std::{fmt::{self, Display, Formatter}, iter::from_fn, ptr::null_mut};
 
 use widestring::U16CString;
 use windows::{
     core::PWSTR,
     Win32::{
-        Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, WIN32_ERROR},
+        Foundation::{ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, WIN32_ERROR},
         System::Registry::*,
     },
 };
@@ -21,8 +21,32 @@ pub struct RegistryKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegistryError {
+    NotFoundError,
+    AccessDeniedError,
     Win32Error(WIN32_ERROR),
     OtherError(String),
+}
+
+impl From<WIN32_ERROR> for RegistryError {
+    fn from(err: WIN32_ERROR) -> Self {
+        match err {
+            ERROR_FILE_NOT_FOUND => RegistryError::NotFoundError,
+            ERROR_NO_MORE_ITEMS => RegistryError::NotFoundError,
+            ERROR_ACCESS_DENIED => RegistryError::AccessDeniedError,
+            _ => RegistryError::Win32Error(err),
+        }
+    }
+}
+
+impl Display for RegistryError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            RegistryError::NotFoundError => write!(f, "Registry key or value not found!"),
+            RegistryError::AccessDeniedError => write!(f, "Access denied!"),
+            RegistryError::Win32Error(e) => write!(f, "Win32 error: {}", e.0),
+            RegistryError::OtherError(e) => write!(f, "Error: {}", e),
+        }
+    }
 }
 
 impl Drop for RegistryKey {
@@ -75,7 +99,7 @@ impl RegistryKey {
             )
         };
         if hkey_err.is_err() {
-            return Err(RegistryError::Win32Error(hkey_err));
+            return Err(RegistryError::from(hkey_err));
         }
         let path: String = format!("{}\\{}", self.path, name.to_string().unwrap());
         Ok(RegistryKey { hkey, path })
@@ -96,12 +120,6 @@ impl RegistryKey {
             )))?]
             .to_string();
         RegistryKey::from_path(&path)
-        // let mut hkey = Default::default();
-        // let hkey_err = unsafe { RegOpenKeyExW(self.hkey, w!(".."), 0, KEY_READ, &mut hkey) };
-        // if hkey_err.is_err() {
-        //     return Err(RegistryError::Win32Error(hkey_err));
-        // }
-        // Ok(RegistryKey { hkey, path })
     }
 
     pub fn create_subkey(&self, name: &str) -> Result<RegistryKey, RegistryError> {
@@ -126,7 +144,7 @@ impl RegistryKey {
         };
 
         if hkey_err.is_err() {
-            return Err(RegistryError::Win32Error(hkey_err));
+            return Err(RegistryError::from(hkey_err));
         }
 
         let path: String = format!("{}\\{}", self.path, name.to_string().unwrap());
@@ -164,7 +182,7 @@ impl RegistryKey {
         };
 
         if value_err.is_err() {
-            return Err(RegistryError::Win32Error(value_err));
+            return Err(RegistryError::from(value_err));
         }
 
         let mut value_buf = vec![0u8; value_len as usize];
@@ -186,7 +204,7 @@ impl RegistryKey {
         };
 
         if value_err.is_err() {
-            return Err(RegistryError::Win32Error(value_err));
+            return Err(RegistryError::from(value_err));
         }
 
         let value =
@@ -202,7 +220,7 @@ impl RegistryKey {
         let res = self.get_value(name);
         if res.is_err() {
             let err = res.unwrap_err();
-            if err == RegistryError::Win32Error(ERROR_FILE_NOT_FOUND) {
+            if err == RegistryError::NotFoundError {
                 return Ok(None);
             }
             return Err(err);
@@ -243,7 +261,7 @@ impl RegistryKey {
         };
 
         if value_err.is_err() {
-            return Err(RegistryError::Win32Error(value_err));
+            return Err(RegistryError::from(value_err));
         }
 
         Ok(())
@@ -269,7 +287,7 @@ impl RegistryKey {
         };
 
         if info_err.is_err() {
-            return Err(RegistryError::Win32Error(info_err));
+            return Err(RegistryError::from(info_err));
         }
 
         Ok(children_count as usize)
@@ -298,7 +316,7 @@ impl RegistryKey {
         };
 
         if info_err.is_err() {
-            return Box::new([Err(RegistryError::Win32Error(info_err))].into_iter());
+            return Box::new([Err(RegistryError::from(info_err))].into_iter());
         }
 
         let mut name_buf = vec![0u16; max_name_len as usize + 1];
@@ -324,7 +342,7 @@ impl RegistryKey {
                     return None;
                 }
 
-                return Some(Err(RegistryError::Win32Error(enum_err)));
+                return Some(Err(RegistryError::from(enum_err)));
             }
 
             index += 1;

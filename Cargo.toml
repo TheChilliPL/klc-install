@@ -1,9 +1,11 @@
 [package]
 name = "klc-install"
 version = "0.1.0"
+description = "A tool to install and uninstall KLC keyboard layouts"
 edition = "2021"
 
 [dependencies]
+clap = { version = "4.5.20", features = ["derive"] }
 is_elevated = "0.1.2"
 widestring = "1.1.0"
 

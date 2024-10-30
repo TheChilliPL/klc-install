@@ -38,6 +38,13 @@ impl RegistryValue<'_> {
     pub fn get_value(&self) -> &RegistryValueData {
         &self.value
     }
+
+    pub fn unwrap_str(self) -> String {
+        match self.value {
+            RegistryValueData::String(string) => string,
+            _ => panic!("Value is not a string!"),
+        }
+    }
 }
 
 #[derive(Debug)]

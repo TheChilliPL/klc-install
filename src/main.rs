@@ -1,4 +1,8 @@
-use std::path::Path;
+use std::{
+    env::current_dir,
+    error::Error,
+    path::{Path, PathBuf},
+};
 
 use clap::{Args, Parser, Subcommand};
 use is_elevated::is_elevated;
@@ -12,6 +16,9 @@ use registry_key::{RegistryError, RegistryKey};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+    // TODO /// Forces the program to run non-interactively.
+    // #[clap(short, long)]
+    // non_interactive: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -27,25 +34,25 @@ enum Commands {
     /// Installs a keyboard layout
     Install {
         /// Path to the keyboard layout file.
-        /// 
+        ///
         /// Can be a .KLC file or a .DLL file.
         file: String,
 
         /// Path to MSKLC 1.4 directory.
-        /// 
+        ///
         /// If the file is a .KLC file, MSKLC must be placed in %PATH% or provided here.
         #[clap(long)]
         msklc: Option<String>,
 
         /// Registry key to install the layout under.
-        /// 
+        ///
         /// Must be an 8-digit hexadecimal number, where the last 4 digits signify the language code.
         /// By default, it starts at F000xxxx and increments by 1 for each layout.
         #[clap(short, long, visible_alias("key"), value_name = "KEY")]
         registry_key: Option<String>,
 
         /// ID of the layout to use.
-        /// 
+        ///
         /// Must be a 4-digit hexadecimal number that is not already in use and
         /// is at most F000.
         /// Uses the highest available ID by default.
@@ -59,9 +66,9 @@ enum Commands {
         name: Option<String>,
 
         /// Add localized Display Name registry value.
-        /// 
+        ///
         /// Will use the localized name in the layout file if available.
-        /// 
+        ///
         /// By default, true if explicit name is not provided.
         #[clap(short, long, action = clap::ArgAction::Set, value_name = "BOOL")]
         localize_name: Option<bool>,
@@ -70,7 +77,7 @@ enum Commands {
     /// Tries to update the specific keyboard layout
     Update {
         /// Path to the keyboard layout file.
-        /// 
+        ///
         /// Can be a .KLC file or a .DLL file.
         file: String,
     },
@@ -114,20 +121,29 @@ fn list_layouts(all: bool) {
     let layouts_key: Result<RegistryKey, RegistryError> = get_layouts_key();
 
     if layouts_key.is_err() {
-        panic!("Failed to open the Keyboard Layouts registry key. {}", layouts_key.unwrap_err());
+        panic!(
+            "Failed to open the Keyboard Layouts registry key. {}",
+            layouts_key.unwrap_err()
+        );
     }
 
     let layouts_key = layouts_key.unwrap();
 
     let layout_keys_iter = layouts_key.iter_children();
 
-    println!("{:>8} {:<4} {:<32} {:<32} {}", "Key", "ID", "Name", "Display Name", "File");
+    println!(
+        "{:>8} {:<4} {:<32} {:<32} {}",
+        "Key", "ID", "Name", "Display Name", "File"
+    );
 
     let mut skipped = 0;
 
     for layout_key_err in layout_keys_iter {
         if layout_key_err.is_err() {
-            println!("Failed to open a child registry key. {}", layout_key_err.unwrap_err());
+            println!(
+                "Failed to open a child registry key. {}",
+                layout_key_err.unwrap_err()
+            );
             continue;
         }
 
@@ -140,10 +156,22 @@ fn list_layouts(all: bool) {
             continue;
         }
 
-        let layout_id = layout_key.try_get_value(Some("Layout Id")).unwrap().map(|v| v.unwrap_str());
-        let layout_name = layout_key.try_get_value(Some("Layout Text")).unwrap().map(|v| v.unwrap_str());
-        let layout_display = layout_key.try_get_value(Some("Layout Display Name")).unwrap().map(|v| v.unwrap_str());
-        let layout_file = layout_key.try_get_value(Some("Layout File")).unwrap().map(|v| v.unwrap_str());
+        let layout_id = layout_key
+            .try_get_value(Some("Layout Id"))
+            .unwrap()
+            .map(|v| v.unwrap_str());
+        let layout_name = layout_key
+            .try_get_value(Some("Layout Text"))
+            .unwrap()
+            .map(|v| v.unwrap_str());
+        let layout_display = layout_key
+            .try_get_value(Some("Layout Display Name"))
+            .unwrap()
+            .map(|v| v.unwrap_str());
+        let layout_file = layout_key
+            .try_get_value(Some("Layout File"))
+            .unwrap()
+            .map(|v| v.unwrap_str());
 
         println!(
             "{:>8} {:<4} {:<32} {:<32} {}",
@@ -156,8 +184,50 @@ fn list_layouts(all: bool) {
     }
 
     if skipped > 0 {
-        println!("Skipped {} system layouts. Use -a|--all to show all.", skipped);
+        println!(
+            "Skipped {} system layouts. Use -a|--all to show all.",
+            skipped
+        );
     }
+}
+
+/// Checks if MSKLC is installed in the given directory.
+///
+/// Returns the path to KBDUTOOL if found.
+fn get_kbdutool(msklc_dir: &Path) -> Result<PathBuf, String> {
+    let msklc_path = msklc_dir.canonicalize().map_err(|e| e.to_string())?;
+    let mut kbdutool_path = msklc_path.join("kbdutool.exe");
+
+    if !kbdutool_path.exists() {
+        kbdutool_path = msklc_path.join("bin/i386/kbdutool.exe");
+
+        if !kbdutool_path.exists() {
+            return Err("KBDUTOOL was not found in the MSKLC directory!".to_string());
+        }
+    }
+
+    Ok(kbdutool_path)
+}
+
+/// Tries to find MSKLC's KBDUTOOL in the PATH.
+fn find_kbdutool_in_path() -> Result<PathBuf, String> {
+    let path_env = std::env::var("PATH").map_err(|e| e.to_string())?;
+    let path_env = path_env.split(';');
+
+    for path in path_env {
+        let path = Path::new(path);
+
+        // Check for MSKLC
+        let msklc_path = path.join("MSKLC.exe");
+
+        if !msklc_path.exists() {
+            continue;
+        }
+
+        return find_kbdutool_in_path();
+    }
+
+    Err("MSKLC was not found in PATH. Please provide the path to MSKLC using --msklc.".to_string())
 }
 
 fn install_layout(
@@ -168,59 +238,68 @@ fn install_layout(
     _name: Option<String>,
     _localize_name: Option<bool>,
 ) {
-    let file_path = file;
-    let file = std::fs::File::open(&file_path);
-    let mut msklc = msklc;
+    let file_path = Path::new(&file).canonicalize().unwrap();
 
-    if file.is_err() {
-        panic!("Failed to open the file. {}", file.unwrap_err());
-    }
+    // let is_dll = file_path.ends_with(".dll");
+    // if !is_dll && !file_path.ends_with(".klc") {
+    //     panic!("The file must be a .KLC or .DLL file.");
+    // }
+    let extension = file_path.extension().unwrap().to_ascii_lowercase();
 
-    let is_dll = file_path.ends_with(".dll");
-    if !is_dll && !file_path.ends_with(".klc") {
+    if extension != "klc" && extension != "dll" {
         panic!("The file must be a .KLC or .DLL file.");
     }
 
-    if !is_dll {
+    if extension == "klc" {
         // We need to compile KLC file
 
         // 1. Try to find MSKLC
-        if msklc.is_none() {
-            let path_env = std::env::var("PATH").unwrap();
-            let path_env = path_env.split(';');
-
-            for path in path_env {
-                let msklc_path = std::path::Path::new(path).join("MSKLC.exe");
-
-                if msklc_path.exists() {
-                    msklc = Some(msklc_path.to_string_lossy().to_string());
-                    break;
-                }
-
-                let kbdutool_path = std::path::Path::new(path).join("kbdutool.exe");
-
-                if kbdutool_path.exists() {
-                    msklc = Some(kbdutool_path.parent().unwrap().parent().unwrap().to_string_lossy().to_string());
-                    break;
-                }
-            }
-
-            if msklc.is_none() {
-                panic!("MSKLC was not found in PATH. Please provide the path to MSKLC using --msklc.");
-            }
-        }
-
-        let msklc = msklc.unwrap();
+        let kbdutool_path = if let Some(msklc) = msklc {
+            get_kbdutool(&Path::new(&msklc)).unwrap()
+        } else {
+            find_kbdutool_in_path().unwrap()
+        };
 
         // 2. Compile the KLC file
 
-        let compile = std::process::Command::new(Path::new(&msklc).join("bin/i386/kbdutool.exe"))
-            .arg("--help").output().unwrap().stdout;
+        let kbdutool_output = std::process::Command::new(kbdutool_path)
+            .arg("-wum")
+            .arg(&file_path)
+            .output()
+            .unwrap();
 
-        println!("{}", String::from_utf8_lossy(compile.as_slice()));
+        println!(
+            "KBDUTOOL output: {}",
+            String::from_utf8_lossy(&kbdutool_output.stdout)
+        );
+
+        if !kbdutool_output.status.success() {
+            panic!(
+                "Failed to compile the KLC file. {}",
+                String::from_utf8_lossy(&kbdutool_output.stderr)
+            );
+        }
+
+        // 3. Get the compiled DLL file
+
+        // Doesn't work if file name isn't the same as layout name...
+        // Gotta parse the KLC file to get the layout name
+
+        let dll_path = current_dir()
+            .unwrap()
+            .join(file_path.file_name().unwrap())
+            .with_extension("dll")
+            .canonicalize()
+            .unwrap();
+
+        println!("The compiled DLL file is at: {}", dll_path.display());
+
+        // if !dll_path.exists() {
+        //     panic!("The compiled DLL file was not found.");
+        // }
     }
 
-    todo!();
+    todo!("All good for now!");
 }
 
 fn update_layout(_file: String) {

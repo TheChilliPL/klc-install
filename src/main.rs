@@ -1,6 +1,8 @@
 use std::{
+    char::{decode_utf16, DecodeUtf16},
     env::current_dir,
     error::Error,
+    io::{BufRead, Read},
     path::{Path, PathBuf},
 };
 
@@ -10,6 +12,8 @@ mod registry_key;
 mod registry_value;
 mod utils;
 use registry_key::{RegistryError, RegistryKey};
+use utils::{IntoU16Iter, ReadUtf16Line, StringExt};
+use widestring::{decode_utf16_lossy, U16String};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -237,21 +241,67 @@ fn install_layout(
     _id: Option<String>,
     _name: Option<String>,
     _localize_name: Option<bool>,
-) {
-    let file_path = Path::new(&file).canonicalize().unwrap();
+) -> Result<(), String> {
+    let file_path = Path::new(&file).canonicalize().map_err(|e| e.to_string())?;
 
     // let is_dll = file_path.ends_with(".dll");
     // if !is_dll && !file_path.ends_with(".klc") {
     //     panic!("The file must be a .KLC or .DLL file.");
     // }
-    let extension = file_path.extension().unwrap().to_ascii_lowercase();
+    let extension = file_path.extension().map(|ext| ext.to_ascii_lowercase());
 
-    if extension != "klc" && extension != "dll" {
-        panic!("The file must be a .KLC or .DLL file.");
+    if extension != Some("klc".into()) && extension != Some("dll".into()) {
+        return Err("The file must be a .KLC or .DLL file.".to_string());
     }
 
-    if extension == "klc" {
-        // We need to compile KLC file
+    if extension == Some("klc".into()) {
+        // We have to parse some stuff from the KLC file
+        let klc_file = std::fs::File::open(&file_path).map_err(|e| e.to_string())?;
+
+        let klc_reader = std::io::BufReader::new(klc_file);
+
+        let mut lines = klc_reader.utf16_lines();
+        let mut coded_layout_key = None;
+        let mut coded_layout_name = None;
+        let mut coded_locale_id = None;
+        loop {
+            let mut line = lines
+                .next()
+                .ok_or_else(|| "Couldn't find info in the KLC file.".to_string())?
+                .map_err(|e| e.to_string())?;
+
+            if line.is_empty() {
+                continue;
+            }
+
+            if line.remove_prefix("KBD\t") {
+                let (key, name) = line
+                    .split_once('\t')
+                    .ok_or_else(|| "Invalid KLC file.".to_string())?;
+                coded_layout_key = Some(key.to_string());
+                coded_layout_name = Some(name[1..name.len() - 1].to_string());
+            } else if line.remove_prefix("LOCALEID\t") {
+                coded_locale_id = Some(line[1..line.len() - 1].to_string());
+            }
+
+            if coded_layout_key.is_some()
+                && coded_layout_name.is_some()
+                && coded_locale_id.is_some()
+            {
+                break;
+            }
+        }
+
+        let coded_layout_key = coded_layout_key.unwrap();
+        let coded_layout_name = coded_layout_name.unwrap();
+        let coded_locale_id = coded_locale_id.unwrap();
+
+        println!(
+            "Found layout with key {}, with name {} and locale ID {}!",
+            coded_layout_key, coded_layout_name, coded_locale_id
+        );
+
+        // Now we need to compile KLC file
 
         // 1. Try to find MSKLC
         let kbdutool_path = if let Some(msklc) = msklc {
@@ -287,16 +337,16 @@ fn install_layout(
 
         let dll_path = current_dir()
             .unwrap()
-            .join(file_path.file_name().unwrap())
+            .join(coded_layout_key)
             .with_extension("dll")
             .canonicalize()
             .unwrap();
 
         println!("The compiled DLL file is at: {}", dll_path.display());
 
-        // if !dll_path.exists() {
-        //     panic!("The compiled DLL file was not found.");
-        // }
+        // // if !dll_path.exists() {
+        // //     panic!("The compiled DLL file was not found.");
+        // // }
     }
 
     todo!("All good for now!");
@@ -330,7 +380,7 @@ fn main() {
             id,
             name,
             localize_name,
-        } => install_layout(file, msklc, registry_key, id, name, localize_name),
+        } => install_layout(file, msklc, registry_key, id, name, localize_name).unwrap(),
         Commands::Update { file } => update_layout(file),
         Commands::Uninstall {
             layout,

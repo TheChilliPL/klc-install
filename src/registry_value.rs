@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::registry_key::RegistryKey;
-use crate::utils::ToU16Slice;
+use crate::utils::AsU16Slice;
 use widestring::U16CString;
 use windows::Win32::System::Registry::*;
 
@@ -90,7 +90,7 @@ impl RegistryValueData {
                 Ok(RegistryValueData::Qword(qword))
             }
             REG_SZ => {
-                let string = U16CString::from_vec_truncate(data.to_u16_slice()).to_string();
+                let string = U16CString::from_vec_truncate(data.as_u16_slice()).to_string();
                 // if string.is_err() {
                 //     return Err("Failed to parse UTF-16 data!".to_string());
                 // }
@@ -101,7 +101,7 @@ impl RegistryValueData {
                 Ok(RegistryValueData::String(string.unwrap()))
             }
             REG_MULTI_SZ => {
-                let data_16 = data.to_u16_slice();
+                let data_16 = data.as_u16_slice();
                 let mut strings = Vec::new();
                 let mut i = 0;
                 while i < data_16.len() {
@@ -117,7 +117,7 @@ impl RegistryValueData {
                 Ok(RegistryValueData::MultiString(strings))
             }
             REG_EXPAND_SZ => {
-                let string = String::from_utf16_lossy(data.to_u16_slice());
+                let string = String::from_utf16_lossy(data.as_u16_slice());
                 Ok(RegistryValueData::ExpandString(string))
             }
             _ => Err(format!("Unsupported registry value type {}!", type_code.0)),

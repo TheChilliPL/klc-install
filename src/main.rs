@@ -63,11 +63,11 @@ enum Commands {
         #[clap(short, long)]
         id: Option<String>,
 
-        /// Name of the layout to use.
+        /// Text (description) of the layout to use.
         ///
         /// If not provided, the name is taken from the layout file or left empty.
-        #[clap(short, long)]
-        name: Option<String>,
+        #[clap(short, long, visible_alias("description"))]
+        text: Option<String>,
 
         /// Add localized Display Name registry value.
         ///
@@ -112,9 +112,9 @@ struct LayoutIdent {
     #[arg(long)]
     id: Option<String>,
 
-    /// Name of the layout to uninstall.
-    #[arg(long)]
-    name: Option<String>,
+    /// Text (description) of the layout to uninstall.
+    #[arg(long, visible_alias("description"))]
+    text: Option<String>,
 }
 
 fn get_layouts_key() -> Result<RegistryKey, RegistryError> {
@@ -234,6 +234,64 @@ fn find_kbdutool_in_path() -> Result<PathBuf, String> {
     Err("MSKLC was not found in PATH. Please provide the path to MSKLC using --msklc.".to_string())
 }
 
+struct KlcInfo {
+    layout_name: String,
+    layout_text: String,
+    locale_id: u16,
+}
+
+impl KlcInfo {
+    fn new(layout_name: String, layout_text: String, locale_id: u16) -> Self {
+        Self {
+            layout_name,
+            layout_text,
+            locale_id,
+        }
+    }
+
+    fn read_from_file(file_path: &Path) -> Result<KlcInfo, String> {
+        let file = std::fs::File::open(&file_path).map_err(|e| e.to_string())?;
+        let reader = std::io::BufReader::new(file);
+        let mut lines = reader.utf16_lines();
+
+        let mut layout_name = None;
+        let mut layout_text = None;
+        let mut locale_id_str = None;
+        loop {
+            let mut line = lines
+                .next()
+                .ok_or_else(|| "Couldn't find info in the KLC file.".to_string())?
+                .map_err(|e| e.to_string())?;
+
+            if line.is_empty() {
+                continue;
+            }
+
+            if line.remove_prefix("KBD\t") {
+                let (key, name) = line
+                    .split_once('\t')
+                    .ok_or_else(|| "Invalid KLC file.".to_string())?;
+                layout_name = Some(key.to_string());
+                layout_text = Some(name[1..name.len() - 1].to_string());
+            } else if line.remove_prefix("LOCALEID\t") {
+                locale_id_str = Some(line[1..line.len() - 1].to_string());
+            }
+
+            if layout_name.is_some() && layout_text.is_some() && locale_id_str.is_some() {
+                break;
+            }
+        }
+
+        let layout_name = layout_name.unwrap();
+        let layout_text = layout_text.unwrap();
+        let locale_id_str = locale_id_str.unwrap();
+
+        let locale_id = u16::from_str_radix(&locale_id_str, 16).map_err(|e| e.to_string())?;
+
+        Ok(Self::new(layout_name, layout_text, locale_id))
+    }
+}
+
 fn install_layout(
     file: String,
     msklc: Option<String>,
@@ -256,49 +314,15 @@ fn install_layout(
 
     if extension == Some("klc".into()) {
         // We have to parse some stuff from the KLC file
-        let klc_file = std::fs::File::open(&file_path).map_err(|e| e.to_string())?;
-
-        let klc_reader = std::io::BufReader::new(klc_file);
-
-        let mut lines = klc_reader.utf16_lines();
-        let mut coded_layout_key = None;
-        let mut coded_layout_name = None;
-        let mut coded_locale_id = None;
-        loop {
-            let mut line = lines
-                .next()
-                .ok_or_else(|| "Couldn't find info in the KLC file.".to_string())?
-                .map_err(|e| e.to_string())?;
-
-            if line.is_empty() {
-                continue;
-            }
-
-            if line.remove_prefix("KBD\t") {
-                let (key, name) = line
-                    .split_once('\t')
-                    .ok_or_else(|| "Invalid KLC file.".to_string())?;
-                coded_layout_key = Some(key.to_string());
-                coded_layout_name = Some(name[1..name.len() - 1].to_string());
-            } else if line.remove_prefix("LOCALEID\t") {
-                coded_locale_id = Some(line[1..line.len() - 1].to_string());
-            }
-
-            if coded_layout_key.is_some()
-                && coded_layout_name.is_some()
-                && coded_locale_id.is_some()
-            {
-                break;
-            }
-        }
-
-        let coded_layout_key = coded_layout_key.unwrap();
-        let coded_layout_name = coded_layout_name.unwrap();
-        let coded_locale_id = coded_locale_id.unwrap();
+        let KlcInfo {
+            layout_name,
+            layout_text,
+            locale_id,
+        } = KlcInfo::read_from_file(&file_path).map_err(|e| e.to_string())?;
 
         println!(
-            "Found layout with key {}, with name {} and locale ID {}!",
-            coded_layout_key, coded_layout_name, coded_locale_id
+            "Found layout with name {}, with text {} and locale ID {} ({2:#06X})!",
+            layout_name, layout_text, locale_id
         );
 
         // Now we need to compile KLC file
@@ -337,7 +361,7 @@ fn install_layout(
 
         let dll_path = current_dir()
             .unwrap()
-            .join(coded_layout_key)
+            .join(layout_name)
             .with_extension("dll")
             .canonicalize()
             .unwrap();
@@ -378,7 +402,7 @@ fn main() {
             msklc,
             registry_key,
             id,
-            name,
+            text: name,
             localize_name,
         } => install_layout(file, msklc, registry_key, id, name, localize_name).unwrap(),
         Commands::Update { file } => update_layout(file),

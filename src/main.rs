@@ -8,12 +8,15 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use is_elevated::is_elevated;
+mod get_known_folder;
 mod registry_key;
 mod registry_value;
 mod utils;
 use registry_key::{RegistryError, RegistryKey};
 use utils::{IntoU16Iter, ReadUtf16Line, StringExt};
 use widestring::{decode_utf16_lossy, U16String};
+use windows::Win32::UI::Shell::FOLDERID_System;
+use get_known_folder::get_known_folder;
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -312,7 +315,7 @@ fn install_layout(
         return Err("The file must be a .KLC or .DLL file.".to_string());
     }
 
-    if extension == Some("klc".into()) {
+    let dll_path = if extension == Some("klc".into()) {
         // We have to parse some stuff from the KLC file
         let KlcInfo {
             layout_name,
@@ -371,7 +374,15 @@ fn install_layout(
         // // if !dll_path.exists() {
         // //     panic!("The compiled DLL file was not found.");
         // // }
-    }
+        dll_path
+    } else {
+        file_path
+    };
+
+    // We have the DLL file now
+
+    // We move it to System32
+    let system32_path = get_known_folder(&FOLDERID_System)?;
 
     todo!("All good for now!");
 }

@@ -1,9 +1,7 @@
 use std::{
-    char::{decode_utf16, DecodeUtf16},
     env::current_dir,
-    error::Error,
-    io::{BufRead, Read},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use clap::{Args, Parser, Subcommand};
@@ -12,11 +10,10 @@ mod get_known_folder;
 mod registry_key;
 mod registry_value;
 mod utils;
-use registry_key::{RegistryError, RegistryKey};
-use utils::{IntoU16Iter, ReadUtf16Line, StringExt};
-use widestring::{decode_utf16_lossy, U16String};
-use windows::Win32::UI::Shell::FOLDERID_System;
 use get_known_folder::get_known_folder;
+use registry_key::{RegistryError, RegistryKey};
+use utils::{move_file, ReadUtf16Line, StringExt};
+use windows::Win32::UI::Shell::FOLDERID_System;
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -50,35 +47,34 @@ enum Commands {
         /// If the file is a .KLC file, MSKLC must be placed in %PATH% or provided here.
         #[clap(long)]
         msklc: Option<String>,
+        // /// Registry key to install the layout under.
+        // ///
+        // /// Must be an 8-digit hexadecimal number, where the last 4 digits signify the language code.
+        // /// By default, it starts at F000xxxx and increments by 1 for each layout.
+        // #[clap(short, long, visible_alias("key"), value_name = "KEY")]
+        // registry_key: Option<String>,
 
-        /// Registry key to install the layout under.
-        ///
-        /// Must be an 8-digit hexadecimal number, where the last 4 digits signify the language code.
-        /// By default, it starts at F000xxxx and increments by 1 for each layout.
-        #[clap(short, long, visible_alias("key"), value_name = "KEY")]
-        registry_key: Option<String>,
+        // /// ID of the layout to use.
+        // ///
+        // /// Must be a 4-digit hexadecimal number that is not already in use and
+        // /// is at most F000.
+        // /// Uses the highest available ID by default.
+        // #[clap(short, long)]
+        // id: Option<String>,
 
-        /// ID of the layout to use.
-        ///
-        /// Must be a 4-digit hexadecimal number that is not already in use and
-        /// is at most F000.
-        /// Uses the highest available ID by default.
-        #[clap(short, long)]
-        id: Option<String>,
+        // /// Text (description) of the layout to use.
+        // ///
+        // /// If not provided, the name is taken from the layout file or left empty.
+        // #[clap(short, long, visible_alias("description"))]
+        // text: Option<String>,
 
-        /// Text (description) of the layout to use.
-        ///
-        /// If not provided, the name is taken from the layout file or left empty.
-        #[clap(short, long, visible_alias("description"))]
-        text: Option<String>,
-
-        /// Add localized Display Name registry value.
-        ///
-        /// Will use the localized name in the layout file if available.
-        ///
-        /// By default, true if explicit name is not provided.
-        #[clap(short, long, action = clap::ArgAction::Set, value_name = "BOOL")]
-        localize_name: Option<bool>,
+        // /// Add localized Display Name registry value.
+        // ///
+        // /// Will use the localized name in the layout file if available.
+        // ///
+        // /// By default, true if explicit name is not provided.
+        // #[clap(short, long, action = clap::ArgAction::Set, value_name = "BOOL")]
+        // localize_name: Option<bool>,
     },
 
     /// Tries to update the specific keyboard layout
@@ -295,14 +291,71 @@ impl KlcInfo {
     }
 }
 
-fn install_layout(
-    file: String,
-    msklc: Option<String>,
-    _registry_key: Option<String>,
-    _id: Option<String>,
-    _name: Option<String>,
-    _localize_name: Option<bool>,
-) -> Result<(), String> {
+fn get_next_layout_key(locale_id: u16) -> Result<String, String> {
+    let layouts_key = get_layouts_key().map_err(|e| e.to_string())?;
+
+    let mut id: u32 = 0xf0000000 | (locale_id as u32);
+
+    loop {
+        let id_str = format!("{:08x}", id);
+
+        let layout_key = layouts_key.get_subkey(&id_str);
+
+        if let Err(RegistryError::NotFound) = layout_key {
+            return Ok(id_str);
+        } else if layout_key.is_err() {
+            return Err(layout_key.unwrap_err().to_string());
+        }
+
+        drop(layout_key);
+
+        if id | 0xffff0000 == 0xffff0000 {
+            return Err("No more layout keys for this locale are available.".to_string());
+        }
+
+        id += 0x000f0000;
+    }
+}
+
+fn get_next_layout_id() -> Result<u16, String> {
+    let layouts_key = get_layouts_key().map_err(|e| e.to_string())?;
+
+    let layout_keys_iter = layouts_key.iter_children();
+
+    let mut layout_ids_used = [false; 0xF000 - 0x0F00];
+
+    let mut mark_layout_id_used = |layout_id: u16| {
+        if layout_id < 0x0F00 {
+            return;
+        }
+
+        layout_ids_used[(layout_id - 0x0F00) as usize] = true;
+    };
+
+    for layout_err in layout_keys_iter {
+        let layout_key = layout_err.map_err(|e| e.to_string())?;
+        let layout_id = layout_key
+            .try_get_value(Some("Layout Id"))
+            .map_err(|e| e.to_string())?;
+
+        if let Some(id) = layout_id {
+            mark_layout_id_used(u16::from_str_radix(&id.unwrap_str(), 16).unwrap());
+        }
+    }
+
+    let check_layout_id_used =
+        |layout_id: u16| -> bool { layout_ids_used[(layout_id - 0x0F00) as usize] };
+
+    for id in 0x0F00..0xF000 {
+        if !check_layout_id_used(id) {
+            return Ok(id);
+        }
+    }
+
+    Err("No more layout IDs are available.".to_string())
+}
+
+fn install_layout(file: String, msklc: Option<String>) -> Result<(), String> {
     let file_path = Path::new(&file).canonicalize().map_err(|e| e.to_string())?;
 
     // let is_dll = file_path.ends_with(".dll");
@@ -383,6 +436,31 @@ fn install_layout(
 
     // We move it to System32
     let system32_path = get_known_folder(&FOLDERID_System)?;
+    let dll_name = dll_path.file_name().unwrap();
+    let new_dll_path = system32_path.join(dll_name);
+
+    println!("meow");
+    move_file(&dll_path, &new_dll_path).map_err(|e| e.to_string())?;
+    println!("meow");
+
+    // We register the layout in the registry
+
+    let layouts_key = get_layouts_key().map_err(|e| e.to_string())?;
+
+    // Find the next available layout key:
+    let layout_key_name = get_next_layout_key(0x0409).map_err(|e| e.to_string())?;
+    // and create it:
+    let layout_key = layouts_key
+        .create_subkey(&layout_key_name)
+        .map_err(|e| e.to_string())?;
+
+    // Find the next available layout ID:
+    let layout_id = get_next_layout_id().map_err(|e| e.to_string())?;
+
+    println!(
+        "Found the next layout key {} and layout ID {:04X}!",
+        layout_key_name, layout_id
+    );
 
     todo!("All good for now!");
 }
@@ -395,27 +473,19 @@ fn uninstall_layout(_layout: LayoutIdent, _force: bool, _remove_dll: bool) {
     todo!();
 }
 
-fn main() {
+fn main() -> Result<(), String> {
     let args = Cli::parse();
 
     // println!("{:#?}", args);
 
     if !is_elevated() {
-        println!("Please run this program as an administrator. This program requires administrative privileges to access the registry.");
+        panic!("Please run this program as an administrator. This program requires administrative privileges to access the registry.");
         // TODO add a way to elevate the process
-        return;
     }
 
     match args.command {
         Commands::List { all } => list_layouts(all),
-        Commands::Install {
-            file,
-            msklc,
-            registry_key,
-            id,
-            text: name,
-            localize_name,
-        } => install_layout(file, msklc, registry_key, id, name, localize_name).unwrap(),
+        Commands::Install { file, msklc } => install_layout(file, msklc)?,
         Commands::Update { file } => update_layout(file),
         Commands::Uninstall {
             layout,
@@ -424,7 +494,7 @@ fn main() {
         } => uninstall_layout(layout, force, remove_dll),
     }
 
-    return;
+    return Ok(());
 
     // let layouts_key =
     //     RegistryKey::from_path("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts")

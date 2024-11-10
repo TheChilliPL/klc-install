@@ -1,11 +1,23 @@
-// use std::{io, path::{self, Path, PathBuf}};
+use std::{fs, io, path::Path};
 
-// pub fn are_path_on_same_fs(path1: &Path, path2: &Path) -> Result<bool, io::Error> {
-//     let fs1 = path1.metadata()?.file_system();
-//     let fs2 = path2.metadata()?.dev();
-//     fs1 == fs2
-// }
+pub fn move_file(from: &Path, to: &Path) -> Result<(), io::Error> {
+    // First we check if the destination file already exists
+    if to.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("File {} already exists.", to.to_str().unwrap()),
+        ));
+    }
 
-// pub fn move_file(path: PathBuf) {
-    
-// }
+    // We try renaming the file first
+    let rename1 = fs::rename(from, to);
+    if rename1.is_ok() {
+        return Ok(());
+    }
+
+    // If renaming fails, we try copying the file and then deleting the original
+    fs::copy(from, to)?;
+    fs::remove_file(from)?;
+
+    Ok(())
+}

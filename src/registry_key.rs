@@ -1,6 +1,10 @@
 #![allow(dead_code)]
 
-use std::{fmt::{self, Display, Formatter}, iter::from_fn, ptr::null_mut};
+use std::{
+    fmt::{self, Display, Formatter},
+    iter::from_fn,
+    ptr::null_mut,
+};
 
 use widestring::U16CString;
 use windows::{
@@ -21,19 +25,19 @@ pub struct RegistryKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegistryError {
-    NotFoundError,
-    AccessDeniedError,
-    Win32Error(WIN32_ERROR),
-    OtherError(String),
+    NotFound,
+    AccessDenied,
+    Win32(WIN32_ERROR),
+    Other(String),
 }
 
 impl From<WIN32_ERROR> for RegistryError {
     fn from(err: WIN32_ERROR) -> Self {
         match err {
-            ERROR_FILE_NOT_FOUND => RegistryError::NotFoundError,
-            ERROR_NO_MORE_ITEMS => RegistryError::NotFoundError,
-            ERROR_ACCESS_DENIED => RegistryError::AccessDeniedError,
-            _ => RegistryError::Win32Error(err),
+            ERROR_FILE_NOT_FOUND => RegistryError::NotFound,
+            ERROR_NO_MORE_ITEMS => RegistryError::NotFound,
+            ERROR_ACCESS_DENIED => RegistryError::AccessDenied,
+            _ => RegistryError::Win32(err),
         }
     }
 }
@@ -41,10 +45,10 @@ impl From<WIN32_ERROR> for RegistryError {
 impl Display for RegistryError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            RegistryError::NotFoundError => write!(f, "Registry key or value not found!"),
-            RegistryError::AccessDeniedError => write!(f, "Access denied!"),
-            RegistryError::Win32Error(e) => write!(f, "Win32 error: {}", e.0),
-            RegistryError::OtherError(e) => write!(f, "Error: {}", e),
+            RegistryError::NotFound => write!(f, "Registry key or value not found!"),
+            RegistryError::AccessDenied => write!(f, "Access denied!"),
+            RegistryError::Win32(e) => write!(f, "Win32 error: {}", e.0),
+            RegistryError::Other(e) => write!(f, "Error: {}", e),
         }
     }
 }
@@ -86,7 +90,7 @@ impl RegistryKey {
 
     pub fn get_subkey(&self, name: &str) -> Result<RegistryKey, RegistryError> {
         let mut name = U16CString::from_str(name).map_err(|e| {
-            RegistryError::OtherError(format!("Couldn't convert string to UTF16! {}", e))
+            RegistryError::Other(format!("Couldn't convert string to UTF16! {}", e))
         })?;
         let mut hkey = Default::default();
         let hkey_err = unsafe {
@@ -107,24 +111,21 @@ impl RegistryKey {
 
     pub fn get_parent(&self) -> Result<RegistryKey, RegistryError> {
         if self.is_root_key() {
-            return Err(RegistryError::OtherError(
+            return Err(RegistryError::Other(
                 "Root keys have no parents!".to_string(),
             ));
         }
-        let path = self.path[..self
-            .path
-            .rfind("\\")
-            .ok_or(RegistryError::OtherError(format!(
-                "Error getting parent of key {}",
-                self.path
-            )))?]
+        let path = self.path[..self.path.rfind("\\").ok_or(RegistryError::Other(format!(
+            "Error getting parent of key {}",
+            self.path
+        )))?]
             .to_string();
         RegistryKey::from_path(&path)
     }
 
     pub fn create_subkey(&self, name: &str) -> Result<RegistryKey, RegistryError> {
         let mut name = U16CString::from_str(name).map_err(|e| {
-            RegistryError::OtherError(format!("Couldn't convert string to UTF16! {}", e))
+            RegistryError::Other(format!("Couldn't convert string to UTF16! {}", e))
         })?;
 
         let mut hkey = HKEY::default();
@@ -158,7 +159,7 @@ impl RegistryKey {
         } else {
             Some(
                 U16CString::from_str(name.unwrap())
-                    .map_err(|e| RegistryError::OtherError(format!("{}", e.to_string())))?,
+                    .map_err(|e| RegistryError::Other(format!("{}", e.to_string())))?,
             )
         };
 
@@ -210,7 +211,7 @@ impl RegistryKey {
         let value =
             RegistryValue::new_from_data(self, name.map(|s| s.to_string()), value_type, value_buf);
 
-        value.map_err(|e| RegistryError::OtherError(e))
+        value.map_err(|e| RegistryError::Other(e))
     }
 
     pub fn try_get_value(
@@ -220,7 +221,7 @@ impl RegistryKey {
         let res = self.get_value(name);
         if res.is_err() {
             let err = res.unwrap_err();
-            if err == RegistryError::NotFoundError {
+            if err == RegistryError::NotFound {
                 return Ok(None);
             }
             return Err(err);
@@ -238,7 +239,7 @@ impl RegistryKey {
         } else {
             Some(
                 U16CString::from_str(name.unwrap())
-                    .map_err(|e| RegistryError::OtherError(format!("{}", e.to_string())))
+                    .map_err(|e| RegistryError::Other(format!("{}", e.to_string())))
                     .unwrap(),
             )
         };
@@ -351,7 +352,7 @@ impl RegistryKey {
 
             Some(
                 name.map(|n| n.to_string().unwrap())
-                    .map_err(|e| RegistryError::OtherError(e.to_string())),
+                    .map_err(|e| RegistryError::Other(e.to_string())),
             )
         }));
     }
@@ -411,7 +412,7 @@ impl RegistryKey {
             "HKEY_CLASSES_ROOT" | "HKCR" => Ok(Self::classes_root()),
             "HKEY_CURRENT_USER" | "HKCU" => Ok(Self::current_user()),
             "HKEY_USERS" | "HKU" => Ok(Self::users()),
-            _ => Err(RegistryError::OtherError(format!(
+            _ => Err(RegistryError::Other(format!(
                 "Invalid root key name: {}",
                 name
             ))),

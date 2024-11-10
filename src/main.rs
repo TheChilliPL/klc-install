@@ -1,7 +1,6 @@
 use std::{
     env::current_dir,
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 use clap::{Args, Parser, Subcommand};
@@ -123,7 +122,7 @@ fn get_layouts_key() -> Result<RegistryKey, RegistryError> {
     RegistryKey::from_path("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts")
 }
 
-fn list_layouts(all: bool) {
+fn list_layouts(all: bool) -> Result<(), String> {
     let layouts_key: Result<RegistryKey, RegistryError> = get_layouts_key();
 
     if layouts_key.is_err() {
@@ -195,6 +194,8 @@ fn list_layouts(all: bool) {
             skipped
         );
     }
+
+    Ok(())
 }
 
 /// Checks if MSKLC is installed in the given directory.
@@ -389,9 +390,9 @@ fn install_layout(file: String, msklc: Option<String>) -> Result<(), String> {
 
         // 1. Try to find MSKLC
         let kbdutool_path = if let Some(msklc) = msklc {
-            get_kbdutool(&Path::new(&msklc)).unwrap()
+            get_kbdutool(&Path::new(&msklc))?
         } else {
-            find_kbdutool_in_path().unwrap()
+            find_kbdutool_in_path()?
         };
 
         // 2. Compile the KLC file
@@ -535,36 +536,39 @@ fn install_layout(file: String, msklc: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
-fn update_layout(_file: String) {
+fn update_layout(_file: String) -> Result<(), String> {
     todo!();
 }
 
-fn uninstall_layout(_layout: LayoutIdent, _force: bool, _remove_dll: bool) {
+fn uninstall_layout(_layout: LayoutIdent, _force: bool, _remove_dll: bool) -> Result<(), String> {
     todo!();
 }
 
-fn main() -> Result<(), String> {
+fn main() {
     let args = Cli::parse();
 
     // println!("{:#?}", args);
 
     if !is_elevated() {
-        panic!("Please run this program as an administrator. This program requires administrative privileges to access the registry.");
+        eprintln!("Please run this program as an administrator. This program requires administrative privileges to access the registry.");
+        return;
         // TODO add a way to elevate the process
     }
 
-    match args.command {
+    let result = match args.command {
         Commands::List { all } => list_layouts(all),
-        Commands::Install { file, msklc } => install_layout(file, msklc)?,
+        Commands::Install { file, msklc } => install_layout(file, msklc),
         Commands::Update { file } => update_layout(file),
         Commands::Uninstall {
             layout,
             force,
             remove_dll,
         } => uninstall_layout(layout, force, remove_dll),
-    }
+    };
 
-    return Ok(());
+    if let Err(e) = result {
+        eprintln!("Encountered an error executing the command.\n{e}")
+    }
 
     // let layouts_key =
     //     RegistryKey::from_path("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts")

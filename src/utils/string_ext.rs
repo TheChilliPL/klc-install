@@ -1,4 +1,4 @@
-use std::{cmp::min, ops::RangeBounds};
+use std::ops::RangeBounds;
 
 use super::RangeBoundsExt;
 
@@ -16,7 +16,7 @@ impl StringExt for String {
             return;
         }
 
-        let (start, end) = (range.start, range.end);
+        let (start, _end) = (range.start, range.end);
         let amount = range.len();
 
         let old_len = self.len();

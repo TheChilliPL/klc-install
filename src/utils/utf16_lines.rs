@@ -1,8 +1,6 @@
 use std::{
-    error::Error,
     fmt::Display,
     io::{self, BufRead},
-    ops::{Deref, Index},
 };
 
 use widestring::{Utf16Str, Utf16String};

@@ -5,6 +5,8 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand};
+use dialoguer::Confirm;
+use indoc::printdoc;
 use is_elevated::is_elevated;
 mod get_known_folder;
 mod registry_key;
@@ -12,6 +14,7 @@ mod registry_value;
 mod utils;
 use get_known_folder::get_known_folder;
 use registry_key::{RegistryError, RegistryKey};
+use registry_value::RegistryValueData;
 use utils::{move_file, ReadUtf16Line, StringExt};
 use windows::Win32::UI::Shell::FOLDERID_System;
 
@@ -227,7 +230,7 @@ fn find_kbdutool_in_path() -> Result<PathBuf, String> {
             continue;
         }
 
-        return find_kbdutool_in_path();
+        return get_kbdutool(path);
     }
 
     Err("MSKLC was not found in PATH. Please provide the path to MSKLC using --msklc.".to_string())
@@ -368,13 +371,14 @@ fn install_layout(file: String, msklc: Option<String>) -> Result<(), String> {
         return Err("The file must be a .KLC or .DLL file.".to_string());
     }
 
-    let dll_path = if extension == Some("klc".into()) {
+    let (klc_info, dll_path) = if extension == Some("klc".into()) {
         // We have to parse some stuff from the KLC file
+        let klc_info = KlcInfo::read_from_file(&file_path).map_err(|e| e.to_string())?;
         let KlcInfo {
-            layout_name,
-            layout_text,
+            ref layout_name,
+            ref layout_text,
             locale_id,
-        } = KlcInfo::read_from_file(&file_path).map_err(|e| e.to_string())?;
+        } = klc_info;
 
         println!(
             "Found layout with name {}, with text {} and locale ID {} ({2:#06X})!",
@@ -427,28 +431,57 @@ fn install_layout(file: String, msklc: Option<String>) -> Result<(), String> {
         // // if !dll_path.exists() {
         // //     panic!("The compiled DLL file was not found.");
         // // }
-        dll_path
+        (klc_info, dll_path)
     } else {
-        file_path
+        panic!("DLL installation is not yet implemented.");
+        // file_path
     };
+    let dll_name = dll_path.file_name().unwrap().to_str().unwrap().to_string();
 
     // We have the DLL file now
 
-    // We move it to System32
-    let system32_path = get_known_folder(&FOLDERID_System)?;
-    let dll_name = dll_path.file_name().unwrap();
-    let new_dll_path = system32_path.join(dll_name);
+    for layout_key_err in get_layouts_key()
+        .map_err(|e| e.to_string())?
+        .iter_children()
+    {
+        let layout_key = layout_key_err.map_err(|e| e.to_string())?;
+        let layout_dll = layout_key
+            .get_value(Some("Layout File"))
+            .map_err(|e| e.to_string())?;
 
-    println!("meow");
-    move_file(&dll_path, &new_dll_path).map_err(|e| e.to_string())?;
-    println!("meow");
+        if layout_dll.unwrap_str() == dll_name {
+            return Err(format!(
+                "This layout DLL seems already installed under the key {}!",
+                layout_key.get_name()
+            ));
+        }
+    }
+
+    // We move it to System32
+    if dll_path.parent() != Some(Path::new("C:\\Windows\\System32")) {
+        let system32_path = get_known_folder(&FOLDERID_System)?;
+        let new_dll_path = system32_path.join(&dll_name);
+
+        if new_dll_path.exists() {
+            let confirmation = Confirm::new()
+                .with_prompt("The DLL file already exists in System32. Proceed anyway?")
+                .interact()
+                .map_err(|e| e.to_string())?;
+
+            if !confirmation {
+                return Err("Installation aborted!".to_string());
+            }
+        } else {
+            move_file(&dll_path, &new_dll_path).map_err(|e| e.to_string())?;
+        }
+    }
 
     // We register the layout in the registry
 
     let layouts_key = get_layouts_key().map_err(|e| e.to_string())?;
 
     // Find the next available layout key:
-    let layout_key_name = get_next_layout_key(0x0409).map_err(|e| e.to_string())?;
+    let layout_key_name = get_next_layout_key(klc_info.locale_id).map_err(|e| e.to_string())?;
     // and create it:
     let layout_key = layouts_key
         .create_subkey(&layout_key_name)
@@ -456,13 +489,50 @@ fn install_layout(file: String, msklc: Option<String>) -> Result<(), String> {
 
     // Find the next available layout ID:
     let layout_id = get_next_layout_id().map_err(|e| e.to_string())?;
+    let layout_id_str = format!("{:04X}", layout_id);
 
     println!(
-        "Found the next layout key {} and layout ID {:04X}!",
-        layout_key_name, layout_id
+        "Found the next layout key {} and layout ID {}!",
+        layout_key_name, layout_id_str
     );
 
-    todo!("All good for now!");
+    use RegistryValueData as RVD;
+
+    layout_key
+        .set_value(Some("Layout Id"), RVD::String(layout_id_str.clone()))
+        .map_err(|e| e.to_string())?;
+    layout_key
+        .set_value(Some("Layout File"), RVD::String(dll_name.clone()))
+        .map_err(|e| e.to_string())?;
+    layout_key
+        .set_value(
+            Some("Layout Text"),
+            RVD::String(klc_info.layout_text.clone()),
+        )
+        .map_err(|e| e.to_string())?;
+    let display_name = format!("@{},-1000", dll_name);
+    layout_key
+        .set_value(Some("Layout Display Name"), RVD::ExpandString(display_name))
+        .map_err(|e| e.to_string())?;
+    layout_key
+        .set_value(Some("Installed by"), RVD::String("klc-install".to_string()))
+        .map_err(|e| e.to_string())?;
+
+    printdoc!(
+        "
+            Successfully installed the layout!
+            Key: {}
+            ID: {}
+            Name: {}
+            File: {}
+        ",
+        layout_key_name,
+        layout_id_str,
+        klc_info.layout_text,
+        dll_name
+    );
+
+    Ok(())
 }
 
 fn update_layout(_file: String) {
